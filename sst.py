@@ -46,15 +46,14 @@ class Synchrosqueezing:
         return window, diffed_win
 
     def stft_dstft(self, audio, win_length, hop_length, n_fft):
+        '''
+        1) Obtain window and "differenced" window (passed into tensor)
+        2) Zero-pad audio according to the n_fft length
+        3) slice audio into frames and multiply it with both window and diffed_window
+        4) FFT the windowed frames to have the STFTed audio as Sx and differenced-STFTed audio as dSx
+        '''
         window, diffed_window = self.win_and_diff_win(win_length, n_fft)
-        '''
-        plt.plot(window)
-        plt.show()
-        plt.clf()
-        plt.plot(diffed_window)
-        plt.show()
-        plt.clf()
-        '''
+
         audio = torch.nn.functional.pad(audio, (0, n_fft))
         framed_audio = make_frames(audio, n_fft, hop_length)
 
@@ -74,9 +73,10 @@ class Synchrosqueezing:
         return Sfs
 
     def phase_transform(self, Sx, dSx, Sfs, gamma):
-
-        med = (dSx / Sx) / (2*self.pi)
-
+        '''
+        STFT phase transform: w[u, k] = Im( k - d/dt(Sx[u, k]) / Sx[u, k] / (j*2pi) )
+        which can be reduced to the form here as explained in: https://dsp.stackexchange.com/a/72589/50076
+        '''
         w = Sfs.reshape(-1, 1) - torch.imag(dSx / Sx) / (2*self.pi)
         w = torch.abs(w)
 
@@ -85,6 +85,9 @@ class Synchrosqueezing:
         elif gamma == 'adaptive':
             gamma = torch.mean(torch.abs(Sx)) * 0.99
 
+        '''
+        mark noise as inf to be later removed
+        '''
         w[torch.abs(Sx) < gamma] = np.inf
         return w
     
@@ -95,13 +98,22 @@ class Synchrosqueezing:
     def synchrosqueeze(self, Sx, w, ssq_freqs, squeezetype='lebesque'):
         assert not (torch.min(w) < 0), 'max: {}; min: {}'.format(torch.max(w), torch.min(w))
 
+        #########################################
+        '''
+        Amplitude manipulation on Sx
+        '''
         if squeezetype == 'lebesque':
             Sx = torch.ones_like(Sx) / Sx.size(0)
         elif squeezetype == 'abs':
             Sx = torch.abs(Sx)
         else:
             raise ValueError('Unsupported squeeze function keyword; support `lebesque` or `abs`.')
-        
+        #########################################
+
+        #########################################
+        '''
+        Remove noise data points which were previously marked as inf in w
+        '''
         if self.time_run:
             torch.cuda.synchronize()
             start_time = time.time()
@@ -109,16 +121,25 @@ class Synchrosqueezing:
         if self.time_run:
             torch.cuda.synchronize()
             print("Clear inf time: %s seconds ---" % (time.time() - start_time))
+        #########################################
 
+        #########################################
+        '''
+        Squeeze by spectral adjacency
+        '''
         if self.time_run:
             torch.cuda.synchronize()
             start_time = time.time()
-        # squeeze by spectral adjacency
         freq_mod_indices = find_closest(w.contiguous(), ssq_freqs.contiguous())
         if self.time_run:
             torch.cuda.synchronize()
             print("Spectral squeezing time: %s seconds ---" % (time.time() - start_time))
+        #########################################
 
+        #########################################
+        '''
+        T-F reassignment according to the squeezed result
+        '''
         if self.time_run:
             torch.cuda.synchronize()
             start_time = time.time()
@@ -126,10 +147,16 @@ class Synchrosqueezing:
         Tx = indexed_sum(Sx * df, freq_mod_indices)
         if self.time_run:
             print("Indexed sum time: %s seconds ---" % (time.time() - start_time))
+        #########################################
 
         return Tx
     
     def audio_preparation(self, audio):
+        '''
+        1) pad the audio to proper length such that FFT can be done efficiently
+        2) dt is calculated as the difference (integrand) under the sample rate
+        3) convert everything to Pytorch tensors
+        '''
         audio = torch.tensor(audio, device=torch_device)
         time_indices = torch.linspace(start=0,end=dur,steps=audio.size(0), device=torch_device)
 
@@ -148,26 +175,45 @@ class Synchrosqueezing:
         self.sr = sr
         if self.time_run:
             sst_start_time = time.time()
+
         #########################################
+        '''
+        Audio Preparation
+        '''
         audio, dt = self.audio_preparation(audio)
-        
+        #########################################
+
+        #########################################
         if self.time_run:
             torch.cuda.synchronize()
             start_time = time.time()
+        '''
+        Obtain STFTed signal and STFTed "difference" signal
+        '''
         Sx, dSx = self.stft_dstft(audio, win_length, hop_length, n_fft)
         Sfs = self.get_Sfs(Sx)
         if self.time_run:
             torch.cuda.synchronize()
             print("Sx and dSx stft time: %s seconds ---" % (time.time() - start_time))
+        #########################################
 
+        #########################################
         if self.time_run:
             torch.cuda.synchronize()
             start_time = time.time()
+        '''
+        Phase transform
+        '''
         w = self.phase_transform(Sx, dSx, Sfs, gamma)
         if self.time_run:
             torch.cuda.synchronize()
             print("Phase transform time: %s seconds ---" % (time.time() - start_time))
-        
+        #########################################
+
+        #########################################
+        '''
+        Synchrosqueeze on the STFT
+        '''
         # Tx is returned as numpy array
         Tx = self.synchrosqueeze(Sx, w, ssq_freqs=Sfs, squeezetype='lebesque')
         Sx = Sx.detach().cpu().numpy()

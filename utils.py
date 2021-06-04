@@ -51,26 +51,17 @@ def find_closest(a, v):
     idx[m] -= 1
     out = sidx[idx]
     return out
-'''
-@torch.jit.script
-def indexed_sum(a, k):
-    """Sum `a` into rows of 2D array according to indices given by 2D `k`"""
-    out = torch.zeros_like(a)
-    for i in range(a.size(0)):
-        for j in range(a.size(1)):
-            out[k[i][j], j] += a[i][j]
-    return out
-'''
+
 def indexed_sum(a, k):
     """Sum `a` into rows of 2D array according to indices given by 2D `k`."""
     a = a.detach().cpu().numpy()
     k = k.detach().cpu().numpy()
     out = np.zeros(a.shape, dtype=a.dtype)
-    _indexed_sum_par(a, k, out)
+    _parallel_indexed_sum(a, k, out)
 
     return out
 @jit(nopython=True, cache=True, parallel=True)
-def _indexed_sum_par(a, k, out):
+def _parallel_indexed_sum(a, k, out):
     for j in prange(a.shape[1]):
         for i in range(a.shape[0]):
             out[k[i, j], j] += a[i, j]
