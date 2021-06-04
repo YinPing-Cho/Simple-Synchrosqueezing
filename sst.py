@@ -1,9 +1,11 @@
 import librosa
 import torch
 import numpy as np
+import scipy.signal as sig
 import soundfile as sf
 import matplotlib.pyplot as plt
-from utils import zero_padding, make_frames, indexed_sum
+import time
+from utils import zero_padding, make_frames, find_closest, indexed_sum
 
 class Synchrosqueezing:
     def __init__(self, torch_device):
@@ -13,6 +15,8 @@ class Synchrosqueezing:
         self.pi = np.pi
         self.EPS32 = np.finfo(np.float32).eps
         self.EPS64 = np.finfo(np.float64).eps
+        self.sr = None
+        self.time_run = None
 
     def xi_function(self, scale, N):
         """
@@ -29,7 +33,7 @@ class Synchrosqueezing:
         return xi
 
     def win_and_diff_win(self, win_length, n_fft):
-        window = torch.hann_window(window_length=win_length, device=torch_device)
+        window = torch.tensor(sig.windows.dpss(win_length, max(4, win_length//8), sym=False), device=self.torch_device)
         window = zero_padding(window, n_fft)
         
         ffted_win = torch.fft.fft(window)
@@ -61,63 +65,71 @@ class Synchrosqueezing:
         Dimensions: n_fft*num_frames -> (b_fft//2+1)*num_frames
         '''
         ffted_Sx = torch.fft.rfft(Sx, dim=0)
-        ffted_dSx = torch.fft.rfft(dSx, dim=0)
+        ffted_dSx = torch.fft.rfft(dSx, dim=0)*self.sr
 
         return ffted_Sx, ffted_dSx
 
-    def get_Sfs(self, Sx, sr):
-        Sfs = torch.linspace(0, .5*sr, Sx.size(0), device=Sx.device)
+    def get_Sfs(self, Sx):
+        Sfs = torch.linspace(0, .5*self.sr, Sx.size(0), device=Sx.device)
         return Sfs
 
     def phase_transform(self, Sx, dSx, Sfs, gamma):
+
+        med = (dSx / Sx) / (2*self.pi)
+
         w = Sfs.reshape(-1, 1) - torch.imag(dSx / Sx) / (2*self.pi)
+        w = torch.abs(w)
+
+        if gamma is None:
+            gamma = np.sqrt(self.EPS32)
+        elif gamma == 'adaptive':
+            gamma = torch.mean(torch.abs(Sx)) * 0.99
+
         w[torch.abs(Sx) < gamma] = np.inf
         return w
-
-    def replace_inf(self, x, inf_criterion, constant=0):
-        for i in range(x.shape[0]):
-            for j in range(x.shape[1]):
-                if np.isinf(inf_criterion[i][j]):
-                    x[i][j] = constant
+    
+    def replace_inf(self, x, inf_criterion):
+        x = torch.where(torch.isinf(inf_criterion), torch.zeros_like(x), x)
         return x
 
-    def find_closest(self, a, v):
-        """Equivalent to argmin(abs(a[i, j] - v)) for all i, j; a is 2D, v is 1D.
-        Credit: Divakar -- https://stackoverflow.com/a/64526158/10133797
-        """
-        sidx = v.argsort()
-        v_s = v[sidx]
-        idx = np.searchsorted(v_s, a)
-        idx[idx == len(v)] = len(v) - 1
-        idx0 = (idx-1).clip(min=0)
-
-        m = np.abs(a - v_s[idx]) >= np.abs(v_s[idx0] - a)
-        m[idx == 0] = 0
-        idx[m] -= 1
-        out = sidx[idx]
-        return out
-
-    def synchrosqueeze(self, Wx, w, ssq_freqs, squeezetype='lebesque'):
+    def synchrosqueeze(self, Sx, w, ssq_freqs, squeezetype='lebesque'):
         assert not (torch.min(w) < 0), 'max: {}; min: {}'.format(torch.max(w), torch.min(w))
 
         if squeezetype == 'lebesque':
-            Wx = torch.ones_like(Wx) / Wx.size(0)
+            Sx = torch.ones_like(Sx) / Sx.size(0)
         elif squeezetype == 'abs':
-            Wx = torch.abs(Wx)
+            Sx = torch.abs(Sx)
         else:
             raise ValueError('Unsupported squeeze function keyword; support `lebesque` or `abs`.')
         
-        Wx = self.replace_inf(Wx, inf_criterion=w)
+        if self.time_run:
+            torch.cuda.synchronize()
+            start_time = time.time()
+        Sx = self.replace_inf(Sx, inf_criterion=w)
+        if self.time_run:
+            torch.cuda.synchronize()
+            print("Clear inf time: %s seconds ---" % (time.time() - start_time))
 
+        if self.time_run:
+            torch.cuda.synchronize()
+            start_time = time.time()
         # squeeze by spectral adjacency
-        freq_mod_indices = self.find_closest(w, ssq_freqs)
+        freq_mod_indices = find_closest(w.contiguous(), ssq_freqs.contiguous())
+        if self.time_run:
+            torch.cuda.synchronize()
+            print("Spectral squeezing time: %s seconds ---" % (time.time() - start_time))
 
+        if self.time_run:
+            torch.cuda.synchronize()
+            start_time = time.time()
         df = ssq_freqs[1] - ssq_freqs[0]
-        Tx = indexed_sum(Wx * df, freq_mod_indices)
+        Tx = indexed_sum(Sx * df, freq_mod_indices)
+        if self.time_run:
+            print("Indexed sum time: %s seconds ---" % (time.time() - start_time))
 
         return Tx
     
-    def audio_preparation(self, audio, sr):
+    def audio_preparation(self, audio):
         audio = torch.tensor(audio, device=torch_device)
         time_indices = torch.linspace(start=0,end=dur,steps=audio.size(0), device=torch_device)
 
@@ -127,28 +139,47 @@ class Synchrosqueezing:
 
         return audio, dt
 
-    def visualize(self, T, ):
-        plt.imshow(torch.abs(T), aspect='auto', cmap='jet')
+    def visualize(self, T):
+        T = T.detach().cpu()
+        plt.imshow(torch.abs(T)/torch.max(torch.abs(T)), aspect='auto', vmin=0, vmax=.2, cmap='jet')
         plt.show()
 
-    def sst_stft_forward(self, audio, sr, gamma=None, win_length=512, hop_length=256, n_fft=1024, visualize=True):
-        audio, dt = self.audio_preparation(audio, sr)
-
+    def sst_stft_forward(self, audio, sr, gamma=None, win_length=256, hop_length=1, n_fft=256, visualize=True, time_run=True):
+        self.time_run = time_run
+        self.sr = sr
+        if self.time_run:
+            sst_start_time = time.time()
+        #########################################
+        audio, dt = self.audio_preparation(audio)
+        
+        if self.time_run:
+            torch.cuda.synchronize()
+            start_time = time.time()
         Sx, dSx = self.stft_dstft(audio, win_length, hop_length, n_fft)
-        Sfs = self.get_Sfs(Sx, sr)
+        Sfs = self.get_Sfs(Sx)
+        if self.time_run:
+            torch.cuda.synchronize()
+            print("Sx and dSx stft time: %s seconds ---" % (time.time() - start_time))
 
-        if gamma is None:
-            gamma = np.sqrt(np.sqrt(self.EPS32))
+        if self.time_run:
+            torch.cuda.synchronize()
+            start_time = time.time()
         w = self.phase_transform(Sx, dSx, Sfs, gamma)
-
+        if self.time_run:
+            torch.cuda.synchronize()
+            print("Phase transform time: %s seconds ---" % (time.time() - start_time))
+        
         Tx = self.synchrosqueeze(Sx, w, ssq_freqs=Sfs, squeezetype='lebesque')
+        #########################################
+        if self.time_run:
+            print("--- SST total run time: %s seconds ---" % (time.time() - sst_start_time))
 
         if visualize:
             self.visualize(Tx)
             self.visualize(Sx)
-        return Tx, Sx
+        return Tx.detach().cpu(), Sx.detach().cpu()
 
-torch_device = 'cpu'
+torch_device = 'cuda'
 filename = 'draw_16.wav'
 audio, sr = sf.read(filename, dtype='float32')
 dur = librosa.get_duration(y=audio, sr=sr)
@@ -163,7 +194,7 @@ xo += xo[::-1]  # add self reflected
 x = xo + np.sqrt(2) * np.random.randn(N)  # add noise
 
 print(x.shape)
-Tx, Sx = SST.sst_stft_forward(audio=audio, sr=N, gamma=3, visualize=True)
-
+Tx, Sx = SST.sst_stft_forward(audio=xo, sr=N, gamma='adaptive', visualize=True, time_run=True)
+#print('Tx max: {}; min: {}'.format(torch.max(Tx.abs()), torch.min(Tx.abs())))
 plt.plot(Tx)
 plt.show()
