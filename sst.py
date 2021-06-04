@@ -140,8 +140,7 @@ class Synchrosqueezing:
         return audio, dt
 
     def visualize(self, T):
-        T = T.detach().cpu()
-        plt.imshow(torch.abs(T)/torch.max(torch.abs(T)), aspect='auto', vmin=0, vmax=.2, cmap='jet')
+        plt.imshow(np.abs(T)/np.max(np.abs(T)), aspect='auto', vmin=0, vmax=.2, cmap='jet')
         plt.show()
 
     def sst_stft_forward(self, audio, sr, gamma=None, win_length=256, hop_length=1, n_fft=256, visualize=True, time_run=True):
@@ -169,7 +168,9 @@ class Synchrosqueezing:
             torch.cuda.synchronize()
             print("Phase transform time: %s seconds ---" % (time.time() - start_time))
         
+        # Tx is returned as numpy array
         Tx = self.synchrosqueeze(Sx, w, ssq_freqs=Sfs, squeezetype='lebesque')
+        Sx = Sx.detach().cpu().numpy()
         #########################################
         if self.time_run:
             print("--- SST total run time: %s seconds ---" % (time.time() - sst_start_time))
@@ -177,7 +178,7 @@ class Synchrosqueezing:
         if visualize:
             self.visualize(Tx)
             self.visualize(Sx)
-        return Tx.detach().cpu(), Sx.detach().cpu()
+        return Tx, Sx
 
 torch_device = 'cuda'
 filename = 'draw_16.wav'
