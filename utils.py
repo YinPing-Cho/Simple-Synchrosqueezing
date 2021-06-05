@@ -2,6 +2,19 @@ import numpy as np
 import torch
 from numba import jit, prange
 
+def calc_SNR(signal, axis=0, ddof=0):
+    '''
+    Credit: https://github.com/scipy/scipy/blob/v0.16.0/scipy/stats/stats.py#L1963
+    '''
+    m = signal.mean(axis)
+    sd = signal.std(axis=axis, ddof=ddof)
+    return 20*np.log10(abs(np.where(sd == 0, 0, m/sd)))
+
+@jit(nopython=True, cache=True, parallel=True)
+def pre_emphasis(signal, coefficient = 0.95):
+    return np.append(signal[0],signal[1:] - coefficient*signal[:-1])
+
+@jit(nopython=True, cache=True)
 def is_power_of_2(num):
     return (num & (num-1) == 0) and num != 0
 
@@ -36,6 +49,11 @@ def make_frames(x, frame_length, hop_length):
     return frames
 
 @torch.jit.script
+def torch_MAD(x):
+    x = x.abs()
+    return torch.median(torch.abs(x - torch.median(x)))
+
+@torch.jit.script
 def find_closest(a, v):
     """Equivalent to argmin(abs(a[i, j] - v)) for all i, j; a is 2D, v is 1D.
     Credit: Divakar -- https://stackoverflow.com/a/64526158/10133797
@@ -58,10 +76,15 @@ def indexed_sum(a, k):
     k = k.detach().cpu().numpy()
     out = np.zeros(a.shape, dtype=a.dtype)
     _parallel_indexed_sum(a, k, out)
-
     return out
 @jit(nopython=True, cache=True, parallel=True)
 def _parallel_indexed_sum(a, k, out):
     for j in prange(a.shape[1]):
         for i in range(a.shape[0]):
             out[k[i, j], j] += a[i, j]
+
+def de_zero_pad(x, original_length, padded_length, hop_length):
+    trim_length = padded_length - original_length
+    trim_frames = trim_length // hop_length
+    trim_frames_per_side = trim_frames // 2
+    return x[:,trim_frames_per_side:-trim_frames_per_side]
