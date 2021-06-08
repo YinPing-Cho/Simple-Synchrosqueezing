@@ -2,13 +2,10 @@ import numpy as np
 import torch
 from numba import jit, prange
 
-def calc_SNR(signal, axis=0, ddof=0):
-    '''
-    Credit: https://github.com/scipy/scipy/blob/v0.16.0/scipy/stats/stats.py#L1963
-    '''
-    m = signal.mean(axis)
-    sd = signal.std(axis=axis, ddof=ddof)
-    return 20*np.log10(abs(np.where(sd == 0, 0, m/sd)))
+def calc_SNR(signal, noise):
+    signal_energy = np.mean(np.square(signal))
+    noise_energy = np.mean(np.square(noise))
+    return 20*np.log10(signal_energy / noise_energy)
 
 @jit(nopython=True, cache=True, parallel=True)
 def pre_emphasis(signal, coefficient = 0.95):

@@ -3,6 +3,7 @@ import torch
 import numpy as np
 import scipy.signal as sig
 from scipy.fft import ifft
+from scipy.signal import istft as istft
 import soundfile as sf
 import matplotlib.pyplot as plt
 import time
@@ -39,9 +40,12 @@ class Synchrosqueezing:
             xi[i] = (i - N) * h
         return xi
 
-    def win_and_diff_win(self, win_length, n_fft):
-        #window = torch.tensor(sig.windows.dpss(win_length, max(4, win_length//8), sym=False), device=self.torch_device)
-        window = torch.hann_window(win_length, device=self.torch_device)
+    def win_and_diff_win(self, win_length, n_fft, use_Hann=False):
+        if use_Hann:
+            window = torch.hann_window(win_length, device=self.torch_device)
+        else:
+            window = torch.tensor(sig.windows.dpss(win_length, max(4, win_length//8), sym=False), device=self.torch_device)
+
         window = zero_padding(window, n_fft)
         #plt.plot(window.detach().cpu().numpy())
         #plt.show()
@@ -182,12 +186,15 @@ class Synchrosqueezing:
         return audio, dt
 
     def visualize(self, T):
-        T = np.log(np.abs(T)+1e-3)
-        T = T - np.min(T)
-        plt.imshow(np.flipud(T), aspect='auto', cmap='jet') # , vmin=0, vmax=.2
+        T = np.abs(T)
+        #T = np.log(T+1e-3)
+        #T = T - np.min(T)
+        plt.imshow(T, aspect='auto', cmap='jet') # , vmin=0, vmax=.2
         plt.show()
 
-    def sst_stft_forward(self, audio, sr, gamma=None, win_length=512, hop_length=128, n_fft=512, visualize=True, time_run=True):
+    def sst_stft_forward(self, audio, sr, gamma=None, win_length=256, hop_length=1, use_Hann=False, visualize=True, time_run=True):
+        assert hop_length == 1, 'Other hop length settings are not implemented, and do not comply with the mathematical proof in the original paper.'
+        n_fft = win_length
         self.signal_length = int((audio.shape[0]//2)*2)
         self.time_run = time_run
         self.sr = sr
@@ -239,6 +246,9 @@ class Synchrosqueezing:
         # Tx is returned as numpy array
         Tx = self.synchrosqueeze(Sx, w, ssq_freqs=Sfs, squeezetype='lebesque')
         Sx = Sx.detach().cpu().numpy()
+
+        #Tx = np.flipud(Tx)
+        #Sx = np.flipud(Sx)
         #########################################
         if self.time_run:
             print("--- SST total run time: %s seconds ---" % (time.time() - sst_start_time))
@@ -251,21 +261,47 @@ class Synchrosqueezing:
             self.visualize(Sx)
         return Tx, Sx
     
+    def sst_stft_inverse(self, Tx, binary=False):
+        spectral_channels = Tx.shape[0]
+        num_channels = self.n_fft
+        #freqs = np.zeros(self.win_length)
+        #freqs[:spectral_channels] += np.linspace(0, 1, spectral_channels)
+        #freqs = np.linspace(0, 1, self.n_fft)
+        freqs = np.arange(num_channels)/num_channels
+        signal = np.zeros(self.signal_length+num_channels)
+        #window = torch.hann_window(num_channels, device='cpu').numpy()
+        if binary:
+            threshold = np.mean(Tx)*0.2
+            Tx = np.where(Tx<threshold, 0, 1)
+        for idx in range(self.signal_length//self.hop_length):
+            frame = np.zeros(num_channels, dtype=Tx.dtype)
+            frame[:spectral_channels-1] = Tx[:-1, idx]
+            frame[spectral_channels-1:] = np.flip(Tx[:-1, idx])
+            inverse = np.exp(2j * np.pi * freqs * idx) * frame
+
+            signal[idx] = np.sum(inverse).real
+
+        return signal
+    '''
     def sst_stft_inverse(self, Tx):
         signal = np.zeros(self.signal_length+self.win_length)
         spectral_channels = Tx.shape[0]
         window = torch.hann_window(spectral_channels, device='cpu')
-        window = torch.nn.functional.pad(window, (0, self.win_length-spectral_channels))
+        #window = self.window.detach().cpu()
+        window = torch.nn.functional.pad(window, (0, self.win_length-len(window)))
         window = window.numpy()
 
         for idx in range(self.signal_length//self.hop_length):
-            frame = np.zeros(self.win_length)
-            frame[:spectral_channels] += ifft(Tx[:, idx]).real
-            frame *= window
+            frame = np.zeros(self.win_length, dtype=Tx.dtype)
+
+            frame[1:spectral_channels-2] += Tx[1:-2, idx]
+            frame[spectral_channels-2:-1] += np.flip(Tx[1:, idx])
+            frame = ifft(2*frame).real
+
             signal[idx*self.hop_length:idx*self.hop_length+self.win_length] += frame
 
         return signal
-
+    '''
 torch_device = 'cuda'
 filename = 'draw_16.wav'
 audio, sr = sf.read(filename, dtype='float32')
@@ -277,30 +313,34 @@ SST = Synchrosqueezing(torch_device=torch_device)
 
 N = 8192
 NyqF = N/2
-time_len = 10
+time_len = 5
 t = np.linspace(0, time_len, N*time_len, endpoint=False)
-xo = np.cos(2*np.pi*np.sin(t)*np.cos(t/time_len)*NyqF)
-xo += np.cos(2*np.pi*np.cos(t)*np.cos(t/time_len*2)*NyqF)
-xo += np.cos(2*np.pi*np.cos(t)*np.cos(t/time_len*5)*NyqF)
+xo = np.sin(2*np.pi*np.sin(t)*np.cos(t/time_len)*NyqF)
+xo *= np.cos(2*np.pi*np.cos(t)*np.cos(t/time_len*5)*NyqF)*1.4
+#xo += xo[::-1]
 xo /= np.max(np.abs(xo))
-x = xo + 0.5*np.random.standard_normal(N*time_len)  # add noise
+
+noise = 0.3*np.random.standard_normal(N*time_len)  # add noise
+x = xo + noise
 
 print(x.shape)
 
+original_signal = xo
 input_signal = x
 sr = N
 
-print('The SNR of input signal: {} dB'.format(calc_SNR(input_signal)))
+#print('The SNR of input signal: {} dB'.format(calc_SNR(original_signal, noise)))
 
 sf.write('input.wav', data=input_signal, samplerate=sr, subtype='PCM_16')
-Tx, Sx = SST.sst_stft_forward(audio=input_signal, sr=sr, gamma=('adaptive',0.9), visualize=True, time_run=True)
+Tx, Sx = SST.sst_stft_forward(audio=input_signal, sr=sr, gamma=('adaptive', 1.0), visualize=False, time_run=True)#
 print('Tx max: {}; min: {}'.format(np.max(np.abs(Tx)), np.min(np.abs(Tx))))
 #plt.plot(Tx)
 #plt.show()
 
-recon_signal = SST.sst_stft_inverse(Tx)
+recon_signal = SST.sst_stft_inverse(Tx, binary=False)
+noise /= np.max(np.abs(recon_signal))
 recon_signal /= np.max(np.abs(recon_signal))
 
-print('The SNR of recon signal: {} dB'.format(calc_SNR(recon_signal)))
+#print('The SNR of recon signal: {} dB'.format(calc_SNR(recon_signal, noise)))
 
 sf.write('recon.wav', data=recon_signal, samplerate=sr, subtype='PCM_16')
