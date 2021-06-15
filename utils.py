@@ -1,6 +1,23 @@
 import numpy as np
 import torch
 from numba import jit, prange
+import matplotlib.pyplot as plt
+
+def plot_signals(signals, samples=None, title=None):
+    for name, s in signals.items():
+        if samples is None:
+            x_labels = np.linspace(0, s.shape[0], s.shape[0])
+            plt.plot(x_labels, s, label=name)
+        else:
+            assert samples <= s.shape[0]
+            x_labels = np.linspace(0, samples, samples)
+            plt.plot(x_labels, s[:samples], label=name)
+    
+    if title is not None:
+        plt.title(title)
+    plt.legend()
+    plt.show()
+    return None
 
 def calc_SNR(signal, noise):
     signal_energy = np.mean(np.square(signal))
@@ -18,26 +35,8 @@ def is_power_of_2(num):
 def smallest_greater_pow2(num):
     return 1<<(num-1).bit_length()
 
-def zero_padding(x, target_length=None):
-    if target_length is not None:
-        assert target_length >= x.size(0), '{} and {}'.format(target_length, x.size(0))
-        assert is_power_of_2(target_length)
-    else:
-        target_length = smallest_greater_pow2(x.size(0))
-    
-    if x.size(0) % 2 != 0:
-        x = x[:-1]
-
-    pad_each_side = (target_length - x.size(0)) / 2
-    assert pad_each_side % 2 == 0
-    pad_each_side = int(pad_each_side)
-
-    x = torch.nn.functional.pad(x, (pad_each_side, pad_each_side))
-
-    return x
-
 def make_frames(x, frame_length, hop_length):
-    num_frames = 1 + int(np.ceil((1.0 * x.size(0) - frame_length) / hop_length))
+    num_frames = 1 + int(np.ceil((x.size(0) - frame_length) / hop_length))
     indices = np.tile(np.arange(0, frame_length), (num_frames, 1)) + np.tile(np.arange(0, num_frames*hop_length, hop_length), (frame_length, 1)).T
     indices = np.array(indices, dtype=np.int32)
 
@@ -67,21 +66,14 @@ def find_closest(a, v):
     out = sidx[idx]
     return out
 
+
 def indexed_sum(a, k):
     """Sum `a` into rows of 2D array according to indices given by 2D `k`."""
-    a = a.detach().cpu().numpy()
-    k = k.detach().cpu().numpy()
     out = np.zeros(a.shape, dtype=a.dtype)
     _parallel_indexed_sum(a, k, out)
     return out
 @jit(nopython=True, cache=True, parallel=True)
 def _parallel_indexed_sum(a, k, out):
     for j in prange(a.shape[1]):
-        for i in range(a.shape[0]):
+        for i in prange(a.shape[0]):
             out[k[i, j], j] += a[i, j]
-
-def de_zero_pad(x, original_length, padded_length, hop_length):
-    trim_length = padded_length - original_length
-    trim_frames = trim_length // hop_length
-    trim_frames_per_side = trim_frames // 2
-    return x[:,trim_frames_per_side:-trim_frames_per_side]
