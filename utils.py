@@ -3,15 +3,15 @@ import torch
 from numba import jit, prange
 import matplotlib.pyplot as plt
 
-def plot_signals(signals, samples=None, title=None):
+def plot_signals(signals, samples=None, start=0, title=None):
     for name, s in signals.items():
         if samples is None:
             x_labels = np.linspace(0, s.shape[0], s.shape[0])
             plt.plot(x_labels, s, label=name)
         else:
-            assert samples <= s.shape[0]
-            x_labels = np.linspace(0, samples, samples)
-            plt.plot(x_labels, s[:samples], label=name)
+            assert samples + start <= s.shape[0]
+            x_labels = np.linspace(start, start+samples, samples)
+            plt.plot(x_labels, s[start:start+samples], label=name)
     
     if title is not None:
         plt.title(title)
@@ -19,10 +19,11 @@ def plot_signals(signals, samples=None, title=None):
     plt.show()
     return None
 
-def calc_SNR(signal, noise):
-    signal_energy = np.mean(np.square(signal))
-    noise_energy = np.mean(np.square(noise))
-    return 20*np.log10(signal_energy / noise_energy)
+def signaltonoise_dB(a, axis=0, ddof=0):
+    a = np.asanyarray(a)
+    m = a.mean(axis)
+    sd = a.std(axis=axis, ddof=ddof)
+    return 20*np.log10(abs(np.where(sd == 0, 0, m/sd)))
 
 @jit(nopython=True, cache=True, parallel=True)
 def pre_emphasis(signal, coefficient = 0.95):
@@ -65,7 +66,6 @@ def find_closest(a, v):
     idx[m] -= 1
     out = sidx[idx]
     return out
-
 
 def indexed_sum(a, k):
     """Sum `a` into rows of 2D array according to indices given by 2D `k`."""
