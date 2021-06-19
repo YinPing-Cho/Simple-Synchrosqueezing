@@ -19,12 +19,6 @@ def plot_signals(signals, samples=None, start=0, title=None):
     plt.show()
     return None
 
-def signaltonoise_dB(a, axis=0, ddof=0):
-    a = np.asanyarray(a)
-    m = a.mean(axis)
-    sd = a.std(axis=axis, ddof=ddof)
-    return 20*np.log10(abs(np.where(sd == 0, 0, m/sd)))
-
 @jit(nopython=True, cache=True, parallel=True)
 def pre_emphasis(signal, coefficient = 0.95):
     return np.append(signal[0],signal[1:] - coefficient*signal[:-1])
@@ -52,9 +46,10 @@ def torch_MAD(x):
 
 @torch.jit.script
 def find_closest(a, v):
-    """Equivalent to argmin(abs(a[i, j] - v)) for all i, j; a is 2D, v is 1D.
+    '''
+    Equivalent to argmin(abs(a[i, j] - v)) for all i, j; a is 2D, v is 1D.
     Credit: Divakar -- https://stackoverflow.com/a/64526158/10133797
-    """
+    '''
     sidx = v.argsort()
     v_s = v[sidx]
     idx = torch.searchsorted(v_s, a)
@@ -68,7 +63,9 @@ def find_closest(a, v):
     return out
 
 def indexed_sum(a, k):
-    """Sum `a` into rows of 2D array according to indices given by 2D `k`."""
+    '''
+    Sum `a` into rows of 2D array according to indices given by 2D `k`.
+    '''
     out = np.zeros(a.shape, dtype=a.dtype)
     _parallel_indexed_sum(a, k, out)
     return out

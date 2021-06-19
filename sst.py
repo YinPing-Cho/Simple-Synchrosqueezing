@@ -28,11 +28,11 @@ class Synchrosqueezing:
         self.n_fft = None
 
     def xi_function(self, scale, N):
-        """
+        '''
         Credit: https://github.com/OverLordGoldDragon/ssqueezepy/blob/efc6f916974be6459f92b35fb21d17b3d7553ed5/ssqueezepy/wavelets.py#L473
         N=128: [0, 1, 2, ..., 64, -63, -62, ..., -1] * (2*pi / N) * scale
         N=129: [0, 1, 2, ..., 64, -64, -63, ..., -1] * (2*pi / N) * scale
-        """
+        '''
         xi = torch.zeros(N, device=self.torch_device)
         h = scale * (2 * self.pi) / N
         for i in range(N // 2 + 1):
@@ -54,8 +54,13 @@ class Synchrosqueezing:
             xi[n_win // 2] = 0
         diffed_win = torch.fft.ifft(ffted_win * 1j * xi).real
 
-        #plt.plot(window.detach().cpu().numpy())
-        #plt.show()
+        if self.visualizeFigs:
+            plt.plot(window.detach().cpu().numpy())
+            plt.title('Window shape')
+            plt.show()
+            plt.plot(diffed_win.detach().cpu().numpy())
+            plt.title('Differenced window')
+            plt.show()
 
         return window, diffed_win
 
@@ -82,7 +87,7 @@ class Synchrosqueezing:
         dSx = torch.fft.ifftshift(dSx, dim=0).real
 
         if self.visualizeFigs:
-            self.visualize(dSx)
+            self.visualize(dSx, dBscale=True, title='Window-Differenced STFT result in dB scale')
         '''
         Dimensions: n_fft*num_frames -> (b_fft//2+1)*num_frames
         '''
@@ -96,9 +101,13 @@ class Synchrosqueezing:
 
     def phase_transform(self, Sx, dSx, Sfs, gamma):
         '''
-        STFT phase transform: w[u, k] = Im( k - d/dt(Sx[u, k]) / Sx[u, k] / (j*2pi) )
-        which can be reduced to the form here as explained in: https://dsp.stackexchange.com/a/72589/50076
+        STFT phase transform.
+        Per: STFT-SST: Thakur, Gaurav and Wu, Hau-Tieng,
+        “Synchrosqueezing-Based Recovery of Instantaneous Frequency from Nonuniform Samples,”
+        SIAM Journal on Mathematical Analysis, Volume 43, pages 2078-2095, 10.1137/100798818, (2011)
+        Definition 3.3 and 3.4
         '''
+
         w = Sfs.reshape(-1, 1) - torch.imag(dSx / Sx) / (2*self.pi)
         w = torch.abs(w)
 
@@ -115,7 +124,7 @@ class Synchrosqueezing:
         mark noise as inf to be later removed
         '''
         if self.visualizeFigs:
-            self.visualize(w)
+            self.visualize(w, dBscale=True, title='Phase-transformed result in dB scale')
         w[torch.abs(Sx) < gamma] = np.inf
         return w
     
@@ -166,7 +175,7 @@ class Synchrosqueezing:
         freq_mod_indices = find_closest(w.contiguous(), ssq_freqs.contiguous())
 
         if self.visualizeFigs:
-            self.visualize(freq_mod_indices, dBscale=False)
+            self.visualize(freq_mod_indices, dBscale=False, title='`Squeezed` frequency indices')
 
         if self.time_run:
             torch.cuda.synchronize()
@@ -190,16 +199,21 @@ class Synchrosqueezing:
 
         return Tx
 
-    def visualize(self, T, dBscale=True):
+    def visualize(self, T, flip=True, dBscale=True, title=None):
+        if flip:
+            T = np.flipud(T)
         if dBscale:
             T = 20*np.log10(np.abs(T)+1e-12)
         else:
             T = np.abs(T)
+
+        if title is not None:
+            plt.title(title)
         plt.imshow(T, aspect='auto', cmap='jet')
         plt.show()
 
     def sst_stft_forward(self, audio, sr, gamma=None, win_length=128, hop_length=1, use_Hann=False, visualize=True, time_run=True, squeezetype='sum'):
-        #assert hop_length == 1, 'Other hop length settings are not implemented, and do not comply with the mathematical proof in the original paper.'
+        assert hop_length == 1, 'Other hop length settings are not implemented, and lengths other than 1 do not comply with the invertibility criteria of SST.'
         n_fft = win_length
         self.visualizeFigs = visualize
         self.signal_length = int((audio.shape[0]//2)*2)
@@ -248,15 +262,13 @@ class Synchrosqueezing:
         Tx = self.synchrosqueeze(Sx, w, ssq_freqs=Sfs, squeezetype=squeezetype)
         Sx = Sx.detach().cpu().numpy()
 
-        Tx = np.flipud(Tx)
-        Sx = np.flipud(Sx)
         #########################################
         if self.time_run:
             print("--- SST total run time: %s seconds ---" % (time.time() - sst_start_time))
 
         if visualize:
-            self.visualize(Tx, dBscale=True)
-            self.visualize(Sx, dBscale=True)
+            self.visualize(Tx, dBscale=True, title='SST result in dB scale')
+            self.visualize(Sx, dBscale=True, title='STFT result in dB scale')
         return Tx, Sx
     
     def sst_stft_inverse(self, Tx):
