@@ -75,7 +75,7 @@ def sst_cycle(torch_device, sr, filename, original_signal, noised_signal, visual
         sf.write(os.path.join(outdir,filename+'_noised.wav'), data=noised_signal, samplerate=sr, subtype='PCM_16')
 
     ### Test with `clean` signal
-    Tx, Sx = SST.sst_stft_forward(audio=original_signal, sr=sr, gamma=('adaptive', 1.0), win_length=1024, hop_length=1, use_Hann=True, visualize=visualize, time_run=True, squeezetype='sum')
+    Tx, Sx = SST.sst_stft_forward(audio=original_signal, sr=sr, gamma=('adaptive', 1.0), win_length=512, hop_length=1, use_Hann=True, visualize=visualize, time_run=True, squeezetype='sum')
     print('Tx max: {}; min: {}'.format(np.max(np.abs(Tx)), np.min(np.abs(Tx))))
     recon_signal = SST.sst_stft_inverse(Tx)
     clean_recon_SNR = calc_SNR(original_signal, recon_signal)
@@ -90,7 +90,7 @@ def sst_cycle(torch_device, sr, filename, original_signal, noised_signal, visual
         sf.write(os.path.join(outdir,filename+'_recon_original.wav'), data=recon_signal, samplerate=sr, subtype='PCM_16')
     
     ### Test with `noised` signal
-    Tx, Sx = SST.sst_stft_forward(audio=noised_signal, sr=sr, gamma=('adaptive', 1.0), win_length=1024, hop_length=1, use_Hann=True, visualize=visualize, time_run=True, squeezetype='sum')
+    Tx, Sx = SST.sst_stft_forward(audio=noised_signal, sr=sr, gamma=('adaptive', 1.0), win_length=512, hop_length=1, use_Hann=True, visualize=visualize, time_run=True, squeezetype='sum')
     print('Tx max: {}; min: {}'.format(np.max(np.abs(Tx)), np.min(np.abs(Tx))))
     recon_signal = SST.sst_stft_inverse(Tx)
     noised_recon_SNR = calc_SNR(original_signal, recon_signal)
@@ -146,7 +146,7 @@ if __name__ == '__main__':
     parser.add_argument('-od', '--outdir', type=str, default='TEST',
                         help='directory where wave files are to be stored')
     parser.add_argument('-fnmlist', '--filenamelist', type=list, default=[
-        'male.flac','flute.flac'
+        'synth', 'male.flac','flute.flac'
         ], help='list of test file names')
     '''
     'synth', 'draw_16.wav','500Hz_gong.flac','flute.flac','gong.flac','vibraphone.flac','piano.flac','soprano.flac',\
