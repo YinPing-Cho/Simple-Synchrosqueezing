@@ -1,0 +1,8 @@
+scipy==1.5.4
+matplotlib==3.3.2
+librosa==0.8.0
+SoundFile==0.10.3.post1
+numba==0.51.2
+numpy==1.19.4
+torch==1.8.1
+ssqueezepy==0.6.1
